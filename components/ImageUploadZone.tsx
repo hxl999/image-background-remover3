@@ -1,30 +1,36 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { Upload, Image as ImageIcon, X, Copy } from 'lucide-react';
+import { Upload, Image as ImageIcon, X, Copy, Sparkles } from 'lucide-react';
+import { imageProcessor, formatFileSize } from '@/lib/api';
 
 export default function ImageUploadZone() {
   const [image, setImage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [isDragging, setIsDragging] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processResult, setProcessResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleFileSelect = useCallback((file: File) => {
-    if (!file.type.startsWith('image/')) {
-      alert('请选择图片文件（JPG、PNG、WebP）');
+  const handleFileSelect = useCallback(async (file: File) => {
+    // 验证文件
+    const validation = imageProcessor.validateFile(file);
+    if (!validation.valid) {
+      setError(validation.error || '文件验证失败');
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert('文件大小不能超过10MB');
-      return;
-    }
+    setError(null);
+    setProcessResult(null);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setImage(e.target?.result as string);
+    try {
+      const dataURL = await imageProcessor.fileToDataURL(file);
+      setImage(dataURL);
       setFileName(file.name);
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      setError('读取文件失败，请重试');
+      console.error('File read error:', err);
+    }
   }, []);
 
   const handleDrop = useCallback(
@@ -79,12 +85,42 @@ export default function ImageUploadZone() {
   const handleRemoveImage = useCallback(() => {
     setImage(null);
     setFileName('');
+    setProcessResult(null);
+    setError(null);
+    setIsProcessing(false);
   }, []);
 
   const handleCopyLink = useCallback(() => {
-    if (image) {
-      navigator.clipboard.writeText(image);
+    const urlToCopy = processResult || image;
+    if (urlToCopy) {
+      navigator.clipboard.writeText(urlToCopy);
       alert('图片链接已复制到剪贴板');
+    }
+  }, [image, processResult]);
+
+  const handleProcessImage = useCallback(async () => {
+    if (!image) return;
+
+    setIsProcessing(true);
+    setError(null);
+
+    try {
+      const result = await imageProcessor.processImage(image, {
+        size: 'auto',
+        type: 'auto',
+      });
+
+      if (result.success && result.data) {
+        setProcessResult(result.data);
+        alert(`背景去除成功！处理时间：${result.metadata?.processingTime || 0}ms`);
+      } else {
+        setError(result.error?.message || '背景去除失败');
+      }
+    } catch (err) {
+      setError('处理过程中发生错误，请重试');
+      console.error('Process error:', err);
+    } finally {
+      setIsProcessing(false);
     }
   }, [image]);
 
@@ -105,32 +141,66 @@ export default function ImageUploadZone() {
         {image ? (
           <div className="space-y-4">
             <div className="relative mx-auto max-w-md">
-              <img
-                src={image}
-                alt="预览"
-                className="mx-auto max-h-64 rounded-lg object-contain"
-              />
-              <button
-                onClick={handleRemoveImage}
-                className="absolute -right-2 -top-2 rounded-full bg-red-500 p-1.5 text-white shadow-lg hover:bg-red-600"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
-              <div className="flex items-center space-x-2">
-                <ImageIcon size={20} className="text-gray-500" />
-                <span className="text-sm font-medium text-gray-700 truncate max-w-[200px]">
-                  {fileName}
-                </span>
+              <div className="relative">
+                <img
+                  src={processResult || image}
+                  alt={processResult ? "去除背景后" : "原图"}
+                  className="mx-auto max-h-64 rounded-lg object-contain"
+                />
+                {processResult && (
+                  <div className="absolute -top-2 -right-2 rounded-full bg-green-500 px-2 py-1 text-xs font-bold text-white">
+                    已处理
+                  </div>
+                )}
+                <button
+                  onClick={handleRemoveImage}
+                  className="absolute -right-2 -top-2 rounded-full bg-red-500 p-1.5 text-white shadow-lg hover:bg-red-600"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                onClick={handleCopyLink}
-                className="flex items-center space-x-1 rounded-lg bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300"
-              >
-                <Copy size={14} />
-                <span>复制链接</span>
-              </button>
+              
+              {processResult && (
+                <div className="mt-2 text-center">
+                  <div className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-800">
+                    <Sparkles size={12} className="mr-1" />
+                    背景已成功去除
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            <div className="space-y-3">
+              <div className="flex items-center justify-between rounded-lg bg-gray-50 p-3">
+                <div className="flex items-center space-x-2">
+                  <ImageIcon size={20} className="text-gray-500" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 truncate max-w-[200px]">
+                      {fileName}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {processResult ? '透明背景 PNG' : '原始图片'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleCopyLink}
+                  className="flex items-center space-x-1 rounded-lg bg-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-300"
+                  disabled={isProcessing}
+                >
+                  <Copy size={14} />
+                  <span>复制链接</span>
+                </button>
+              </div>
+
+              {error && (
+                <div className="rounded-lg bg-red-50 p-3">
+                  <p className="text-sm font-medium text-red-800">{error}</p>
+                  <p className="mt-1 text-xs text-red-600">
+                    请检查图片格式或稍后重试
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -164,21 +234,36 @@ export default function ImageUploadZone() {
       {/* 操作按钮 */}
       <div className="flex flex-wrap gap-3">
         <button
-          className="flex-1 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 px-4 py-3 text-sm font-medium text-white shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          disabled={!image}
+          className="flex-1 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 px-4 py-3 text-sm font-medium text-white shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center"
+          disabled={!image || isProcessing}
+          onClick={handleProcessImage}
         >
-          🪄 开始去除背景
+          {isProcessing ? (
+            <>
+              <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              处理中...
+            </>
+          ) : (
+            <>
+              <Sparkles size={18} className="mr-2" />
+              {processResult ? '重新处理' : '开始去除背景'}
+            </>
+          )}
         </button>
         <button
           className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={!image}
+          disabled={!image || isProcessing}
           onClick={handleRemoveImage}
         >
           重新选择
         </button>
         <button
-          className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          onClick={() => document.querySelector('input[type="file"]')?.click()}
+          className="rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:isProcessing"
+          onClick={() => {
+            const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+            input?.click();
+          }}
+          disabled={isProcessing}
         >
           添加更多图片
         </button>
